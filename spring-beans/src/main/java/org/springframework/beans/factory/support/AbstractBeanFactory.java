@@ -167,6 +167,8 @@ public abstract class AbstractBeanFactory extends FactoryBeanRegistrySupport imp
 	private final Map<String, RootBeanDefinition> mergedBeanDefinitions = new ConcurrentHashMap<>(256);
 
 	/** Names of beans that have already been created at least once */
+	// 当这个Bean被创建完成后，会标记为这个 注意：这里是set集合 不会重复
+	// 至少被创建了一次的  都会放进这里~~~~
 	private final Set<String> alreadyCreated = Collections.newSetFromMap(new ConcurrentHashMap<>(256));
 
 	/** Names of beans that are currently in creation */
@@ -247,6 +249,7 @@ public abstract class AbstractBeanFactory extends FactoryBeanRegistrySupport imp
 		Object bean;
 
 		// Eagerly check singleton cache for manually registered singletons.
+		// 先去一级缓存查一波，查到直接返回
 		Object sharedInstance = getSingleton(beanName);
 		if (sharedInstance != null && args == null) {
 			if (logger.isDebugEnabled()) {
@@ -264,6 +267,7 @@ public abstract class AbstractBeanFactory extends FactoryBeanRegistrySupport imp
 		else {
 			// Fail if we're already creating this bean instance:
 			// We're assumably within a circular reference.
+			// 多态直接报错
 			if (isPrototypeCurrentlyInCreation(beanName)) {
 				throw new BeanCurrentlyInCreationException(beanName);
 			}
@@ -286,7 +290,7 @@ public abstract class AbstractBeanFactory extends FactoryBeanRegistrySupport imp
 					return parentBeanFactory.getBean(nameToLookup, requiredType);
 				}
 			}
-
+			// 放到当前创建bean池
 			if (!typeCheckOnly) {
 				markBeanAsCreated(beanName);
 			}
@@ -316,6 +320,13 @@ public abstract class AbstractBeanFactory extends FactoryBeanRegistrySupport imp
 
 				// Create bean instance.
 				if (mbd.isSingleton()) {
+					// 这里调用的getSingle方法，第二个参数传入了一个ObjectFactory<?> singletonFactory，此接口的实现类必须实现getObject（）方法
+					/* 主要进行了以下几步：
+					 * 1.标注a正在创建中：当前创建bean池
+					 * 2.调用ObjectFactory的getBean（），也就是createBean（）方法
+					 * 3.实例创建完成后，会将它移除正在创建的缓存中
+					 * 4.执行addSingleton（）方法，添加到一级缓存中去
+					 */
 					sharedInstance = getSingleton(beanName, () -> {
 						try {
 							return createBean(beanName, mbd, args);

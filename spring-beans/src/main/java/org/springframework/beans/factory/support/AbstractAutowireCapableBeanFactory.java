@@ -530,9 +530,12 @@ public abstract class AbstractAutowireCapableBeanFactory extends AbstractBeanFac
 		if (mbd.isSingleton()) {
 			instanceWrapper = this.factoryBeanInstanceCache.remove(beanName);
 		}
+		// 创建bean对象，并将器包含在一个BeanWrapper中
+		// BeanWrapper是Spring底层经常使用的一个接口，简单来说是对Bean的一种包装，包括对Bean的属性、方法，数据等。
 		if (instanceWrapper == null) {
 			instanceWrapper = createBeanInstance(beanName, mbd, args);
 		}
+		// 此时拿到的bean是原始对象
 		Object bean = instanceWrapper.getWrappedInstance();
 		Class<?> beanType = instanceWrapper.getWrappedClass();
 		if (beanType != NullBean.class) {
@@ -555,6 +558,8 @@ public abstract class AbstractAutowireCapableBeanFactory extends AbstractBeanFac
 
 		// Eagerly cache singletons to be able to resolve circular references
 		// even when triggered by lifecycle interfaces like BeanFactoryAware.
+		// earlySingletonExposure：是否提前暴露原始对象引用来解决循环依赖，对于单例bean，一般是true，但可以通过allowCircularReferences=false来关闭
+		// isSingletonCurrentlyInCreation：是否在当前创建bean池中
 		boolean earlySingletonExposure = (mbd.isSingleton() && this.allowCircularReferences &&
 				isSingletonCurrentlyInCreation(beanName));
 		if (earlySingletonExposure) {
@@ -562,13 +567,25 @@ public abstract class AbstractAutowireCapableBeanFactory extends AbstractBeanFac
 				logger.debug("Eagerly caching bean '" + beanName +
 						"' to allow for resolving potential circular references");
 			}
+			// 若允许提前暴露引用，则调用addSingletonFactory（）方法
+			// 1.删除二级缓存，2.新建一个Beanfactory放到三级缓存
+			// 则调用addSingletonFactory方法的第二个参数，是给调用者一个机会去自己实现暴露这个bean的逻辑。比如这里用到了getEarlyBeanReference
+			// getEarlyBeanReference：这个方法作用：可以实现aop逻辑  参考自动代理创建器AbstractAutoProxyCreator  实现了这个方法来创建代理对象
+			//若不需要执行AOP的逻辑，直接返回Bean
 			addSingletonFactory(beanName, () -> getEarlyBeanReference(beanName, mbd, bean));
 		}
 
 		// Initialize the bean instance.
 		Object exposedObject = bean;
 		try {
+			// 填充bean属性 比如autowired注解的属性
+			// 比如A依赖B，这里就会去初始化B，如果B再来依赖A,那么这就是典型的循环依赖
 			populateBean(beanName, mbd, instanceWrapper);
+			// 执行初始化回调方法 执行完之后，实际上就是一个可用的对象了
+			// 实例化。这里会执行后置处理器BeanPostProcessor的两个方法
+			// 此处注意：postProcessAfterInitialization()是有可能返回一个代理对象的，这样exposedObject 就不再是原始对象了  特别注意哦~~~
+			// 需要注意的是：@Async的代理对象不不像事务注解是在getEarlyBeanReference()中创建的，是在postProcessAfterInitialization创建的代理
+			// 比如处理@Aysnc的AsyncAnnotationBeanPostProcessor它就是在这个时间里生成代理对象的（有坑，请小心使用@Aysnc）
 			exposedObject = initializeBean(beanName, exposedObject, mbd);
 		}
 		catch (Throwable ex) {
@@ -580,21 +597,33 @@ public abstract class AbstractAutowireCapableBeanFactory extends AbstractBeanFac
 						mbd.getResourceDescription(), beanName, "Initialization of bean failed", ex);
 			}
 		}
-
+		// 如果这个bean允许提前暴露，这里就会进行检查
 		if (earlySingletonExposure) {
+			// 这里第二个参数传入false，不会再去三级缓存查了
+			// 如果其他依赖于这个beanA的其他beanB先初始化了（因为是单例的，所以必然只有这种情况才能get到），就会触发A从三级缓存提到二级缓存，
+			// 此时就需要判断 我们这里填充属性+init后的对象和只进行了实例化的对象是否一致：一致证明没有代理，防止证明有代理
 			Object earlySingletonReference = getSingleton(beanName, false);
 			if (earlySingletonReference != null) {
+				// 这里的判断 exposed和bean是否一致 实际上是判断 exposedObject是否被代理过，
 				if (exposedObject == bean) {
 					exposedObject = earlySingletonReference;
-				}
-				else if (!this.allowRawInjectionDespiteWrapping && hasDependentBean(beanName)) {
+				// allowRawInjectionDespiteWrapping 标注是否允许此Bean的原始类型被注入到其它Bean里面，即使自己最终会被包装（代理）
+				// 默认是false表示不允许，如果改为true表示允许，就不会报错啦。这是我们后面讲的决方案的其中一个方案~~~
+				// 另外dependentBeanMap记录着每个Bean它所依赖的Bean的Map~~~
+				} else if (!this.allowRawInjectionDespiteWrapping && hasDependentBean(beanName)) {
 					String[] dependentBeans = getDependentBeans(beanName);
 					Set<String> actualDependentBeans = new LinkedHashSet<>(dependentBeans.length);
+					// 这个判断原则是：如果此时候b并还没有创建好，this.alreadyCreated.contains(beanName)=true表示此bean已经被创建过，就返回false
+					// 对所有的依赖进行一一检查~	比如此处B就会有问题
+					// “b”它经过removeSingletonIfCreatedForTypeCheckOnly最终返返回false  因为alreadyCreated里面已经有它了（dogetbean最开始就会放进去）表示B已经完全创建完成了~~~
+					// 而b都完成了，所以属性a也赋值完成儿聊 但是B里面引用的a和主流程我这个A竟然不相等，那肯定就有问题(说明不是最终的)~~~
+					// so最终会被加入到actualDependentBeans里面去，表示A真正的依赖~~~
 					for (String dependentBean : dependentBeans) {
 						if (!removeSingletonIfCreatedForTypeCheckOnly(dependentBean)) {
 							actualDependentBeans.add(dependentBean);
 						}
 					}
+					// 如果存在真正的依赖那就报错
 					if (!actualDependentBeans.isEmpty()) {
 						throw new BeanCurrentlyInCreationException(beanName,
 								"Bean with name '" + beanName + "' has been injected into other beans [" +
@@ -616,7 +645,8 @@ public abstract class AbstractAutowireCapableBeanFactory extends AbstractBeanFac
 			throw new BeanCreationException(
 					mbd.getResourceDescription(), beanName, "Invalid destruction signature", ex);
 		}
-
+		// 这里返回到org.springframework.beans.factory.support.DefaultSingletonBeanRegistry.getSingleton(java.lang.String, org.springframework.beans.factory.ObjectFactory<?>)中
+		// 再去执行从二级，三级中删除，直接放到一级中
 		return exposedObject;
 	}
 

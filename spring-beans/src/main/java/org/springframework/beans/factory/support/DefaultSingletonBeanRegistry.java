@@ -79,13 +79,14 @@ public class DefaultSingletonBeanRegistry extends SimpleAliasRegistry implements
 	private final Map<String, ObjectFactory<?>> singletonFactories = new HashMap<>(16);
 
 	/** Cache of early singleton objects: bean name --> bean instance */
-	// 二级缓存：完成实例化但还没有填充属性，以及初始化的对象（）
+	// 二级缓存：完成实例化但还没有填充属性，以及初始化的对象（一个对象构建：要经过实例化->填充属性->初始化（initMethod、InitializingBean方法））
 	private final Map<String, Object> earlySingletonObjects = new HashMap<>(16);
 
 	/** Set of registered singletons, containing the bean names in registration order */
 	private final Set<String> registeredSingletons = new LinkedHashSet<>(256);
 
 	/** Names of beans that are currently in creation */
+	// 当前创建bean池
 	private final Set<String> singletonsCurrentlyInCreation =
 			Collections.newSetFromMap(new ConcurrentHashMap<>(16));
 
@@ -129,6 +130,7 @@ public class DefaultSingletonBeanRegistry extends SimpleAliasRegistry implements
 
 	/**
 	 * Add the given singleton object to the singleton cache of this factory.
+	 *                     eager：渴望的
 	 * <p>To be called for eager registration of singletons.
 	 * @param beanName the name of the bean
 	 * @param singletonObject the singleton object
@@ -172,15 +174,24 @@ public class DefaultSingletonBeanRegistry extends SimpleAliasRegistry implements
 	 * <p>Checks already instantiated singletons and also allows for an early
 	 * reference to a currently created singleton (resolving a circular reference).
 	 * @param beanName the name of the bean to look for
-	 * @param allowEarlyReference whether early references should be created or not
+	 * @param allowEarlyReference whether early references should be created or not 是否从三级缓存尝试提到二级缓存
 	 * @return the registered singleton object, or {@code null} if none found
 	 */
 	@Nullable
 	protected Object getSingleton(String beanName, boolean allowEarlyReference) {
 		Object singletonObject = this.singletonObjects.get(beanName);
+		// 只有一级缓存拿不到 && 且已经在创建的 才需要考虑去二级/三级缓存拿，否则直接返回就好，让上层去处理创建的逻辑
 		if (singletonObject == null && isSingletonCurrentlyInCreation(beanName)) {
 			synchronized (this.singletonObjects) {
+				// 尝试从二级缓存拿
 				singletonObject = this.earlySingletonObjects.get(beanName);
+				// 这个allowEarlyReference正如上面注释所讲： whether early references should be created or not
+				// 它决定了是否要去三级缓存里拿出来放到二级缓存中去
+				/**
+				 * 二级缓存操作主要有：
+				 * 添加：只有一种情况：就是下面的getSingletonObjects从三级缓存挪过来
+				 * 移除：addSingleton，addSingletonFactory，removeSingleton都会删除二级缓存中的数据
+				 */
 				if (singletonObject == null && allowEarlyReference) {
 					ObjectFactory<?> singletonFactory = this.singletonFactories.get(beanName);
 					if (singletonFactory != null) {
@@ -195,10 +206,10 @@ public class DefaultSingletonBeanRegistry extends SimpleAliasRegistry implements
 	}
 
 	/**
-	 * Return the (raw) singleton object registered under the given name,
+	 * Return the (raw) singleton object registered under the given name, 原始的，未经加工的对象
 	 * creating and registering a new one if none registered yet.
 	 * @param beanName the name of the bean
-	 * @param singletonFactory the ObjectFactory to lazily create the singleton
+	 * @param singletonFactory the ObjectFactory to lazily create the singleton objectFactory是为了延迟创建一个对象，在objectFactory里面，我们可以执行额外的类似于aop的操作
 	 * with, if necessary
 	 * @return the registered singleton object
 	 */
@@ -248,6 +259,7 @@ public class DefaultSingletonBeanRegistry extends SimpleAliasRegistry implements
 					afterSingletonCreation(beanName);
 				}
 				if (newSingleton) {
+					//二级/三级缓存删掉，增加到一级缓存，可以直接用了
 					addSingleton(beanName, singletonObject);
 				}
 			}
